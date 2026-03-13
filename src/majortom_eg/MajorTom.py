@@ -2,7 +2,6 @@ import numpy as np
 import shapely.geometry
 from shapely.geometry import Polygon
 from geolib import geohash
-from shapely.geometry.geo import box
 
 
 class GridCell:
@@ -10,9 +9,10 @@ class GridCell:
     def __init__(self, geom: shapely.geometry.Polygon, is_primary: bool = True):
         self.geom = geom
         self.is_primary = is_primary
+        self._id = geohash.encode(geom.centroid.y, geom.centroid.x, 11)
 
     def id(self) -> str:
-        return geohash.encode(self.geom.centroid.y, self.geom.centroid.x, 11)
+        return self._id
 
 
 class MajorTomGrid:
@@ -96,23 +96,47 @@ class MajorTomGrid:
                         yield GridCell(primary_cell_polygon, is_primary=True)
 
 
-    def cell_from_id(self, cell_id: str, buffer=False) -> GridCell:
-        if len(cell_id)!= 11:
-            raise ValueError("Cell ID must be exactly 11 characters")
+    def cell_from_id(self, cell_id: str) -> GridCell:
+        search_id = cell_id[:11] if len(cell_id) > 11 else cell_id
+        if len(search_id) != 11:
+            raise ValueError("Cell ID must be at least 11 characters")
 
-        bounds = geohash.bounds(cell_id)
-        p = box(bounds.sw[1],bounds.sw[0],bounds.ne[1],bounds.ne[0])
+        bounds = geohash.bounds(search_id)
+        center_lat = (bounds.sw[0] + bounds.ne[0]) / 2
+        center_lon = (bounds.sw[1] + bounds.ne[1]) / 2
 
-        if buffer:
-            buffer_size = 0.0001 * self.D
-            p = p.buffer(buffer_size)
+        half_lat = self.lat_spacing / 2
+        for row_offset in (-1, 0, 1):
+            row_idx = int(np.floor((center_lat + 90) / self.lat_spacing)) + row_offset
+            row_lat = self.get_row_lat(row_idx)
+            lon_spacing = self.get_lon_spacing(row_lat)
+            half_lon = lon_spacing / 2
 
-        candidates = list(self.generate_grid_cells(p))
-        for candidate in candidates:
-            if candidate.id() == cell_id:
-                return candidate
+            for col_offset in (-1, 0, 1):
+                col_idx = int(np.floor((center_lon + 180) / lon_spacing)) + col_offset
+                cell_lon = -180 + col_idx * lon_spacing
 
-        if not buffer:
-            return self.cell_from_id(cell_id, True)
+                primary = Polygon([
+                    [cell_lon, row_lat],
+                    [cell_lon + lon_spacing, row_lat],
+                    [cell_lon + lon_spacing, row_lat + self.lat_spacing],
+                    [cell_lon, row_lat + self.lat_spacing],
+                ])
+                candidate = GridCell(primary, is_primary=True)
+                if candidate.id() == search_id:
+                    return candidate
+
+                if self.overlap:
+                    overlap_lon = cell_lon + half_lon
+                    overlap_lat = row_lat + half_lat
+                    overlap_poly = Polygon([
+                        [overlap_lon, overlap_lat],
+                        [overlap_lon + lon_spacing, overlap_lat],
+                        [overlap_lon + lon_spacing, overlap_lat + self.lat_spacing],
+                        [overlap_lon, overlap_lat + self.lat_spacing],
+                    ])
+                    overlap_cell = GridCell(overlap_poly, is_primary=False)
+                    if overlap_cell.id() == search_id:
+                        return overlap_cell
 
         raise ValueError(f"No cell found with ID {cell_id}")
