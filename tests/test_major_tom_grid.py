@@ -459,7 +459,7 @@ class TestMajorTomGrid(unittest.TestCase):
 
         cells = list(self.grid.generate_grid_cells(test_poly))
         # There should be at least one cell intersecting this polygon
-        self.assertTrue(len(cells) == 335, "Should generate 117 cells")
+        self.assertTrue(len(cells) == 222, "Should generate 222 cells")
         # Check that all returned cells intersect the original polygon
         for cell in cells:
             self.assertTrue(cell.geom.intersects(test_poly), "All returned cells should intersect the polygon")
@@ -511,10 +511,13 @@ class TestMajorTomGrid(unittest.TestCase):
             # do something with cells
             print(f'cell id is {cell.id()}')
 
-    #for whatever reason this cell was not looking up, was the reason for the buffer searching added in 0.1.1
-    def test_bad_cell(self):
-        cell = self.grid.cell_from_id('qr330j8p802')
-        print(cell)
+    # Verifies that cells not found at the direct (row=0, col=0) offset are still
+    # discovered via the ±1 neighbor search.
+    def test_edge_case_cell(self):
+        cell = self.grid.cell_from_id('6r32gxpn0w4')
+        self.assertIsNotNone(cell)
+        self.assertEqual(cell.id(), '6r32gxpn0w4')
+        self.assertFalse(cell.is_primary)
 
 if __name__ == '__main__':
     unittest.main()

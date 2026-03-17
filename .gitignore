@@ -1,0 +1,4 @@
+.venv
+.idea
+.cursor
+__pycache__
