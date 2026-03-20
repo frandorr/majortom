@@ -459,7 +459,7 @@ class TestMajorTomGrid(unittest.TestCase):
 
         cells = list(self.grid.generate_grid_cells(test_poly))
         # There should be at least one cell intersecting this polygon
-        self.assertTrue(len(cells) == 222, "Should generate 222 cells")
+        self.assertTrue(len(cells) == 225, "Should generate 225 cells")
         # Check that all returned cells intersect the original polygon
         for cell in cells:
             self.assertTrue(cell.geom.intersects(test_poly), "All returned cells should intersect the polygon")
@@ -518,6 +518,113 @@ class TestMajorTomGrid(unittest.TestCase):
         self.assertIsNotNone(cell)
         self.assertEqual(cell.id(), '6r32gxpn0w4')
         self.assertFalse(cell.is_primary)
+
+class TestESACompatibility(unittest.TestCase):
+    """Verify grid alignment matches ESA's linspace+mod reference implementation."""
+
+    EARTH_RADIUS_KM = 6378.137
+
+    def _esa_latitudes(self, dist_km):
+        import math
+        num_divisions = math.ceil(math.pi * self.EARTH_RADIUS_KM / dist_km)
+        import numpy as np
+        lats = np.linspace(-90, 90, num_divisions + 1)[:-1]
+        lats = np.mod(lats, 180) - 90
+        return np.sort(lats)
+
+    def _esa_longitudes(self, lat, dist_km):
+        import math, numpy as np
+        circumference = 2 * math.pi * self.EARTH_RADIUS_KM * math.cos(lat * math.pi / 180)
+        num_divisions = math.ceil(circumference / dist_km)
+        lons = np.linspace(-180, 180, num_divisions + 1)[:-1]
+        lons = np.mod(lons, 360) - 180
+        return np.sort(lons)
+
+    def _eg_latitudes(self, grid):
+        import numpy as np
+        return np.array([grid.get_row_lat(i) for i in range(int(grid.row_count))])
+
+    def _eg_longitudes(self, grid, lat):
+        import numpy as np
+        lon_spacing = grid.get_lon_spacing(lat)
+        lon_offset = grid.get_lon_offset(lon_spacing)
+        n_cols = int(np.ceil(
+            2 * np.pi * grid.earth_radius * np.cos(np.radians(min(max(lat, -89), 89))) / grid.D
+        ))
+        return np.array([grid.get_col_lon(i, lon_spacing, lon_offset) for i in range(n_cols)])
+
+    def test_latitude_alignment(self):
+        import numpy as np
+        for dist_km in [5, 10, 50, 100]:
+            dist_m = dist_km * 1000
+            grid = MajorTomGrid(d=dist_m, overlap=False)
+            esa_lats = self._esa_latitudes(dist_km)
+            eg_lats = self._eg_latitudes(grid)
+            self.assertEqual(len(esa_lats), len(eg_lats),
+                f"dist={dist_km}km: latitude count mismatch ({len(esa_lats)} vs {len(eg_lats)})")
+            np.testing.assert_allclose(eg_lats, esa_lats, atol=1e-10,
+                err_msg=f"dist={dist_km}km: latitude values differ")
+
+    def test_longitude_alignment(self):
+        import numpy as np
+        for dist_km in [5, 10, 50, 100]:
+            dist_m = dist_km * 1000
+            grid = MajorTomGrid(d=dist_m, overlap=False)
+            for test_lat in [0.0, 30.0, 45.0, 60.0]:
+                esa_lons = self._esa_longitudes(test_lat, dist_km)
+                eg_lons = self._eg_longitudes(grid, test_lat)
+                self.assertEqual(len(esa_lons), len(eg_lons),
+                    f"dist={dist_km}km, lat={test_lat}: longitude count mismatch")
+                np.testing.assert_allclose(eg_lons, esa_lons, atol=1e-10,
+                    err_msg=f"dist={dist_km}km, lat={test_lat}: longitude values differ")
+
+    def test_equator_on_grid_line(self):
+        for dist_km in [5, 7, 10, 13, 50, 100]:
+            dist_m = dist_km * 1000
+            grid = MajorTomGrid(d=dist_m, overlap=False)
+            lats = self._eg_latitudes(grid)
+            self.assertIn(0.0, lats,
+                f"dist={dist_km}km: equator (0.0) should be a grid line")
+
+    def test_prime_meridian_on_grid_line(self):
+        for dist_km in [5, 7, 10, 13, 50, 100]:
+            dist_m = dist_km * 1000
+            grid = MajorTomGrid(d=dist_m, overlap=False)
+            for test_lat in [0.0, 30.0, 60.0]:
+                lons = self._eg_longitudes(grid, test_lat)
+                self.assertIn(0.0, lons,
+                    f"dist={dist_km}km, lat={test_lat}: prime meridian (0.0) should be a grid line")
+
+
+class TestMigrateCellId(unittest.TestCase):
+
+    def test_migrated_cell_contains_old_centroid(self):
+        from geolib import geohash as gh
+        grid = MajorTomGrid(d=320, overlap=True)
+        old_ids = ["dr18zj1ntew", "dr19n8zgg4e", "s000003037z", "6r32gxpn0w4"]
+        for old_id in old_ids:
+            new_cell = grid.migrate_cell_id(old_id)
+            lat, lon = gh.decode(old_id)
+            self.assertTrue(
+                new_cell.geom.contains(Point(lon, lat)),
+                f"New cell should contain decoded centroid of old ID {old_id}"
+            )
+
+    def test_migrated_cell_is_primary(self):
+        grid = MajorTomGrid(d=320, overlap=True)
+        new_cell = grid.migrate_cell_id("dr18zj1ntew")
+        self.assertTrue(new_cell.is_primary)
+
+    def test_migrated_cell_has_valid_id(self):
+        grid = MajorTomGrid(d=320, overlap=True)
+        new_cell = grid.migrate_cell_id("dr18zj1ntew")
+        self.assertEqual(len(new_cell.id()), 11)
+
+    def test_migrate_invalid_id(self):
+        grid = MajorTomGrid(d=320, overlap=True)
+        with self.assertRaises(ValueError):
+            grid.migrate_cell_id("short")
+
 
 if __name__ == '__main__':
     unittest.main()
